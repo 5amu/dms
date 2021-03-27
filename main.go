@@ -16,6 +16,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -25,6 +26,9 @@ import (
 	"strings"
 	"time"
 )
+
+// ClockTick is the refresh tick for the timer of the switch
+const ClockTick = 24 * time.Hour
 
 // The first 6 parameters are command line arguments and are
 // better documented later. Later on you'll find internal values
@@ -153,6 +157,20 @@ func flagParse() {
 	flag.Parse()
 }
 
+// clock is the effective clock of the program. Its purpose is to
+// react to time changes by triggering the switch when time passes
+// and the target isn't "alive".
+func clock(ctx context.Context, cfg *config) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.Tick(ClockTick):
+			// Checks to be done every day
+		}
+	}
+}
+
 func main() {
 
 	// Parse flags, it is not optimal, but works... eg. It will
@@ -176,6 +194,17 @@ func main() {
 		panic(err)
 	}
 
-	// TODO: start timer, daemonise, sendMail, etc
+	// Defining a context for aborting execution gracefully
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
+	// This section enstablishes a context and starts the clock and
+	// panics if an error is returned.
+	// https://ieftimov.com/post/four-steps-daemonize-your-golang-programs/
+	if err := clock(ctx, &config{}); err != nil {
+		panic(err)
+	}
+
+	// TODO: start webserver before starting the clock
 }
