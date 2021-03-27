@@ -15,12 +15,14 @@ package main
 // https://www.golangprograms.com/how-to-play-and-pause-execution-of-goroutine.html
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"net"
 	"net/mail"
 	"net/smtp"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -75,6 +77,34 @@ func (c *config) checks() error {
 	if err := smtp.SendMail(target, auth, c.UserEmail, []string{c.UserEmail}, testMsg); err != nil {
 		return err
 	}
+
+	return nil
+}
+
+// getSecret acquires the secret from user input, reading until
+// an EOF string is provided: "EOF<enter>"
+// https://stackoverflow.com/a/30827547
+func (c *config) getSecret() error {
+	var lines []string
+
+	// Acquire input until EOF string is passed in the
+	// terminal input. This is not optimal, but useful
+	fmt.Println("Enter Lines, reading until ^EOF<enter>:")
+	scn := bufio.NewScanner(os.Stdin)
+	for scn.Scan() {
+		line := scn.Text()
+		if len(line) == 1 {
+			if line[0:3] == "EOF" {
+				break
+			}
+		}
+		lines = append(lines, line)
+	}
+	fmt.Println("Secret saved!")
+
+	// Join the strings to get a message body to send.
+	// Stores it in the config struct.
+	c.Secret = strings.Join(lines, "\n")
 
 	return nil
 }
@@ -140,6 +170,12 @@ func main() {
 		panic(err)
 	}
 
-	// TODO: get secret, start timer, daemonise, sendMail, etc
+	// This reads the secret from stdin and stores it in the
+	// config struct as message body for the dead man switch
+	if err := cfg.getSecret(); err != nil {
+		panic(err)
+	}
+
+	// TODO: start timer, daemonise, sendMail, etc
 
 }
