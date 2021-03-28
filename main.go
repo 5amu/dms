@@ -19,6 +19,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -28,20 +29,22 @@ import (
 )
 
 // ClockTick is the refresh tick for the timer of the switch
-const ClockTick = 24 * time.Hour
+const DefaultClockTick = 24 * time.Hour
 
 // The first 6 parameters are command line arguments and are
 // better documented later. Later on you'll find internal values
 // and variables to make the timer work.
 type config struct {
-	UserEmail  string
-	MXServer   string
-	MXPort     string
-	Recipients string
-	Intervals  int
-	Forgive    int
-	Password   string
-	Secret     string
+	UserEmail   string
+	MXServer    string
+	MXPort      string
+	Recipients  string
+	Intervals   int
+	Forgive     int
+	ForgiveCode string
+	Password    string
+	Secret      string
+	Tick        time.Duration
 }
 
 // checks will check the sanity of the parameters passed to the
@@ -82,6 +85,13 @@ func (c *config) checks() error {
 		return err
 	}
 
+	// Set the clock tick from arguments, default is 1 day
+	if cfg.Intervals > 0 {
+		cfg.Tick = time.Duration(cfg.Intervals * 24 * int(time.Hour))
+	} else {
+		cfg.Tick = DefaultClockTick
+	}
+
 	return nil
 }
 
@@ -116,10 +126,10 @@ func (c *config) getSecret() error {
 var cfg config
 
 func banner() {
-	fmt.Fprintln(os.Stdout, "            __              ")
-	fmt.Fprintln(os.Stdout, "       ____/ /___ ___  _____")
-	fmt.Fprintln(os.Stdout, "      / __  / __ `__ \\/ ___/")
-	fmt.Fprintln(os.Stdout, "     / /_/ / / / / / (__  ) ")
+	fmt.Fprintf(os.Stdout, "            __              \n")
+	fmt.Fprintf(os.Stdout, "       ____/ /___ ___  _____\n")
+	fmt.Fprintf(os.Stdout, "      / __  / __ `__ \\/ ___/\n")
+	fmt.Fprintf(os.Stdout, "     / /_/ / / / / / (__  ) \n")
 	fmt.Fprintf(os.Stdout, "     \\__,_/_/ /_/ /_/____/  \n\n")
 	fmt.Fprintf(os.Stdout, "-by 5amu (https://github.com/5amu)\n\n")
 }
@@ -130,7 +140,6 @@ func flagParse() {
 	// during runtime. Practically speaking, this isn't meant to be a
 	// permanent solution. Better implementation are welcome as contributions
 	flag.StringVar(&cfg.UserEmail, "email", "", "Email of the owner")
-
 	flag.StringVar(&cfg.Password, "password", "", "One Time Password for Email sending")
 
 	// mxServer:mxPort should be the SMTP ports to the service you want to
@@ -157,16 +166,49 @@ func flagParse() {
 	flag.Parse()
 }
 
+// generateCode will generate the alphanumeric code that has to be supplied
+// to the http endpoint to increase the Forgive counter
+func generateCode(n int) string {
+	var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+	s := make([]rune, n)
+	for i := range s {
+		s[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(s)
+}
+
 // clock is the effective clock of the program. Its purpose is to
 // react to time changes by triggering the switch when time passes
 // and the target isn't "alive".
 func clock(ctx context.Context, cfg *config) error {
 	for {
 		select {
+		// When the context is killed, or done, this will just
+		// exit the function with no errors
 		case <-ctx.Done():
 			return nil
-		case <-time.Tick(ClockTick):
-			// Checks to be done every day
+		// This will be triggered at every ClockTick
+		case <-time.Tick(cfg.Tick):
+			cfg.Forgive -= 1
+			// If the user is not answering for whatever reason after the
+			// n times defined by Forgive, then trigger the dead man switch
+			if cfg.Forgive < 0 {
+				// Send email to each wmail in recipients variable
+				auth := smtp.PlainAuth("", cfg.UserEmail, cfg.Password, cfg.MXServer)
+				msg := []byte(cfg.UserEmail + "'s Dead Man's Switch here, the secret is" + cfg.Secret)
+				if err := smtp.SendMail(cfg.MXServer+":"+cfg.MXPort, auth, cfg.UserEmail, strings.Split(cfg.Recipients, ","), msg); err != nil {
+					return err
+				}
+				return nil
+			}
+			// If the user has more tries, then generate a new code and send it to
+			// its own mailbox with the code to use
+			cfg.ForgiveCode = generateCode(16)
+			auth := smtp.PlainAuth("", cfg.UserEmail, cfg.Password, cfg.MXServer)
+			msg := []byte("Your Dead Man's Switch here, are you still there? Make a request: http://server:9999/" + cfg.ForgiveCode)
+			if err := smtp.SendMail(cfg.MXServer+":"+cfg.MXPort, auth, cfg.UserEmail, []string{cfg.UserEmail}, msg); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -195,8 +237,7 @@ func main() {
 	}
 
 	// Defining a context for aborting execution gracefully
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// This section enstablishes a context and starts the clock and
