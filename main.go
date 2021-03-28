@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/mail"
 	"net/smtp"
 	"os"
@@ -213,6 +214,25 @@ func clock(ctx context.Context, cfg *config) error {
 	}
 }
 
+// waitForCode will start a http server, waiting for the code as GET
+// parameter, if it receives it, then increases the Forgive value, so that
+// the time limit increases
+func waitForCode() error {
+
+	http.HandleFunc("/", func(rw http.ResponseWriter, r *http.Request) {
+		if cfg.ForgiveCode != "" && r.RequestURI == cfg.ForgiveCode {
+			cfg.Forgive += 1
+			cfg.ForgiveCode = ""
+		}
+	})
+
+	if err := http.ListenAndServe(":9999", nil); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func main() {
 
 	// Parse flags, it is not optimal, but works... eg. It will
@@ -240,12 +260,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Starting the HTTP server as go routine. This won't stop
+	// execution of the next instructions
+	go func() {
+		if err := waitForCode(); err != nil {
+			panic(err)
+		}
+	}()
+
 	// This section enstablishes a context and starts the clock and
 	// panics if an error is returned.
 	// https://ieftimov.com/post/four-steps-daemonize-your-golang-programs/
 	if err := clock(ctx, &config{}); err != nil {
 		panic(err)
 	}
-
-	// TODO: start webserver before starting the clock
 }
